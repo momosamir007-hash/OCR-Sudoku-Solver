@@ -97,20 +97,25 @@ if uploaded_file is not None:
         if st.button("🚀 حل اللغز الآن"):
             with st.spinner("جاري حل اللغز ورسم النتيجة..."):
                 try:
-                    # أخذ الأرقام بعد التعديل
-                    final_board = edited_df.values.tolist()
+                    # 💡 الإصلاح هنا: إجبار الجدول على أن يكون أرقاماً (int) لتجنب خطأ الأصفار
+                    final_board = edited_df.fillna(0).astype(int).values.tolist()
+                    
                     puzzle = Sudoku(final_board, 9, 9)
                     puzzle.solve()
                     
                     st.success("🎉 تم حل اللغز بنجاح!")
                     
-                    # --- التعديل الجديد: رسم الأرقام على الصورة ---
+                    # رسم الأرقام على الصورة
                     output_image = st.session_state.puzzle_image.copy()
                     
                     for (cellRow, boardRow) in zip(st.session_state.cell_locs, puzzle.board):
                         for (cell, digit) in zip(cellRow, boardRow):
                             if cell is None:
                                 continue # تخطي المربعات التي كانت ممتلئة في الأصل
+                            
+                            # أمان إضافي: لا تقم برسم الرقم إذا كان 0
+                            if digit == 0:
+                                continue
                             
                             startX, startY, endX, endY = cell
                             
@@ -123,7 +128,7 @@ if uploaded_file is not None:
                                         cv2.FONT_HERSHEY_SIMPLEX, 0.9, (255, 0, 0), 2)
                     
                     st.write("### ✅ الصورة النهائية بعد الحل:")
-                    # عرض الصورة في Streamlit (نخبره أن ألوان OpenCV هي BGR)
+                    # عرض الصورة في Streamlit
                     st.image(output_image, channels="BGR", use_container_width=True)
                     
                     # إبقاء الجدول لعرض النتيجة كنص أيضاً
