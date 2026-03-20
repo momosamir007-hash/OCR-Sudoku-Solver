@@ -1,8 +1,8 @@
-opencv-python
-tensorflow==2.0.0
-keras
+tensorflow==2.15.0
+opencv-python-headless
 numpy
 imutils
-sklearn
-skimage
+scikit-learn
+scikit-image
 matplotlib
+streamlit
