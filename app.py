@@ -1,6 +1,7 @@
 import streamlit as st
 import subprocess
 import os
+import sys  # أضفنا هذه المكتبة لضمان استخدام المسار الصحيح لبايثون
 
 st.set_page_config(page_title="محلل السودوكو الذكي", page_icon="🧩")
 
@@ -20,17 +21,23 @@ if uploaded_file is not None:
     
     if st.button("حل اللغز الآن 🚀"):
         with st.spinner("جاري تحليل الصورة وحل اللغز... الرجاء الانتظار"):
-            # تشغيل كود الحل الأصلي وتخزين النتيجة
+            
+            # تشغيل كود الحل الأصلي باستخدام sys.executable لضمان قراءة مكتبة cv2
             process = subprocess.run(
-                ["python", "solve_sudoku.py", "-m", "trained_model/digit_classifier.h5", "-i", "temp_image.jpg"],
+                [sys.executable, "solve_sudoku.py", "-m", "trained_model/digit_classifier.h5", "-i", "temp_image.jpg"],
                 capture_output=True, text=True
             )
             
-            # طباعة النتيجة النهائية
-            st.success("تم الحل بنجاح!")
-            st.code(process.stdout, language="text")
-            
-            # في حال وجود خطأ
-            if process.stderr and "Error" in process.stderr:
+            # التحقق مما إذا كانت العملية قد نجحت (الكود 0 يعني نجاح تام)
+            if process.returncode == 0:
+                st.success("تم الحل بنجاح!")
+                st.code(process.stdout, language="text")
+            else:
+                # في حال فشل الكود، سنعرض رسالة الخطأ الدقيقة لمعرفة السبب
                 st.error("حدث خطأ أثناء التحليل:")
                 st.code(process.stderr, language="text")
+                
+                # عرض أي نصوص أخرى طبعها البرنامج قبل أن يتوقف (تساعدنا جداً في التتبع)
+                if process.stdout:
+                    st.warning("سجل العمليات (قد يساعد في معرفة أين توقف البرنامج):")
+                    st.code(process.stdout, language="text")
