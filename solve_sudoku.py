@@ -1,5 +1,4 @@
 import argparse
-
 import cv2
 import imutils
 import numpy as np
@@ -29,13 +28,17 @@ model = load_model(args['model'])
 print("[INFO] processing image...")
 image = cv2.imread(args['image'])
 image = imutils.resize(image, width=600)
-cv2.imshow("Given Image", image)
-cv2.waitKey(0)
+
+# تعطيل نوافذ العرض لخوادم Streamlit
+# cv2.imshow("Given Image", image)
+# cv2.waitKey(0)
 
 # find the puzzle in the image
 puzzleImage, warped = locate_puzzle(image, debug=bool(args['debug']))
-cv2.imshow("Detected Sudoku Puzzle", puzzleImage)
-cv2.waitKey(0)
+
+# تعطيل نوافذ العرض
+# cv2.imshow("Detected Sudoku Puzzle", puzzleImage)
+# cv2.waitKey(0)
 
 # initialize our 9x9 Sudoku board
 board = np.zeros((9, 9), dtype='int')
@@ -120,7 +123,9 @@ for (cellRow, boardRow) in zip(cellLocs, puzzle.board):
         cv2.putText(puzzleImage, str(digit), (testX, testY),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.9, (255, 0, 0), 2)
 
-# show the output image
-cv2.imshow("Solved Puzzle", puzzleImage)
-cv2.waitKey(0)
+# show the output image (تم التعطيل)
+# cv2.imshow("Solved Puzzle", puzzleImage)
+# cv2.waitKey(0)
+
+# حفظ الصورة النهائية بدلاً من عرضها
 cv2.imwrite("solved_puzzle.jpg", puzzleImage)
