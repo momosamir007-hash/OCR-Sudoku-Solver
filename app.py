@@ -4,6 +4,10 @@ import imutils
 import numpy as np
 import pandas as pd
 import os
+import json
+import shutil
+import tempfile
+import h5py
 import tensorflow as tf
 from keras.preprocessing.image import img_to_array
 from keras.models import load_model
@@ -11,37 +15,114 @@ from keras.layers import InputLayer
 from utils.image_processor import locate_puzzle, extract_digit
 from utils.sudoku import Sudoku
 
-# إعدادات الصفحة
 st.set_page_config(page_title="محلل السودوكو الذكي", page_icon="🧩", layout="centered")
 
-# ==========================================
-# 🛡️ حل مشكلة التوافقية (Compatibility Patch)
-# ==========================================
-# نعدّل __init__ الأصلي لـ InputLayer مباشرة (مرة واحدة فقط)
-# هذا يضمن أن أي كود داخلي في Keras يستخدم InputLayer سيمر بالتعديل
-if not getattr(InputLayer, '_compatibility_patched', False):
-    _original_input_layer_init = InputLayer.__init__
+# =====================================================
+# 🛡️ محوّل التوافقية: Keras 3 ← → Keras 2
+# =====================================================
 
-    def _fixed_input_layer_init(self, *args, **kwargs):
-        # ✅ الإصلاح 1: تحويل batch_shape → batch_input_shape
-        if 'batch_shape' in kwargs:
-            kwargs['batch_input_shape'] = kwargs.pop('batch_shape')
-        # ✅ الإصلاح 2: حذف optional (غير موجود في الإصدارات القديمة)
-        kwargs.pop('optional', None)
-        _original_input_layer_init(self, *args, **kwargs)
+def _convert_keras3_to_keras2(obj):
+    """
+    تحويل تنسيق Keras 3 التسلسلي إلى تنسيق Keras 2
+    يعالج كل الطبقات: InputLayer, Conv2D, Dense, BatchNorm...
+    """
+    # ---- القوائم: ندخل في كل عنصر ----
+    if isinstance(obj, list):
+        return [_convert_keras3_to_keras2(item) for item in obj]
 
-    InputLayer.__init__ = _fixed_input_layer_init
-    InputLayer._compatibility_patched = True  # منع التكرار عند إعادة التشغيل
+    # ---- أي شيء غير dict: نرجعه كما هو ----
+    if not isinstance(obj, dict):
+        return obj
 
-# ==========================================
-# ⚙️ إعدادات المحرك (القائمة الجانبية)
-# ==========================================
+    # ---- كشف كائن Keras 3 المسلسل ----
+    # الشكل: {"module": "...", "class_name": "...", "config": {...}, "registered_name": ...}
+    is_keras3_obj = (
+        "module" in obj and
+        "class_name" in obj and
+        "registered_name" in obj and
+        "config" in obj
+    )
+
+    if is_keras3_obj:
+        class_name = obj["class_name"]
+        inner_config = obj.get("config", {})
+
+        # ✅ حالة خاصة: DTypePolicy → نرجع اسم النوع فقط كنص
+        if class_name == "DTypePolicy":
+            if isinstance(inner_config, dict):
+                return inner_config.get("name", "float32")
+            return "float32"
+
+        # ✅ نحوّل الـ config الداخلي بشكل تراجعي
+        fixed_inner = _convert_keras3_to_keras2(inner_config)
+
+        # ✅ حالة خاصة: InputLayer
+        if class_name == "InputLayer" and isinstance(fixed_inner, dict):
+            if "batch_shape" in fixed_inner:
+                fixed_inner["batch_input_shape"] = fixed_inner.pop("batch_shape")
+            fixed_inner.pop("optional", None)
+
+        # ✅ إرجاع بتنسيق Keras 2 (بدون module و registered_name)
+        return {
+            "class_name": class_name,
+            "config": fixed_inner,
+        }
+
+    # ---- dict عادي: ندخل في كل القيم ----
+    return {k: _convert_keras3_to_keras2(v) for k, v in obj.items()}
+
+def fix_h5_for_keras2(original_path):
+    """
+    ينشئ نسخة مؤقتة من ملف .h5 مع config مُحوَّل لـ Keras 2
+    يرجع مسار الملف المؤقت
+    """
+    # إنشاء ملف مؤقت
+    temp_fd, temp_path = tempfile.mkstemp(suffix=".h5")
+    os.close(temp_fd)
+    shutil.copy2(original_path, temp_path)
+
+    with h5py.File(temp_path, "r+") as f:
+        # ---- تحويل model_config ----
+        if "model_config" in f.attrs:
+            raw = f.attrs["model_config"]
+            if isinstance(raw, bytes):
+                raw = raw.decode("utf-8")
+            config = json.loads(raw)
+            fixed = _convert_keras3_to_keras2(config)
+            f.attrs["model_config"] = json.dumps(fixed).encode("utf-8")
+
+        # ---- حذف سمات Keras 3 الزائدة ----
+        for attr_name in ["build_config", "compile_config"]:
+            if attr_name in f.attrs:
+                del f.attrs[attr_name]
+
+    return temp_path
+
+# =====================================================
+# 🛡️ باتش أمان إضافي لـ InputLayer
+# =====================================================
+
+if not getattr(InputLayer, "_patched", False):
+    _orig_init = InputLayer.__init__
+
+    def _safe_init(self, *args, **kwargs):
+        if "batch_shape" in kwargs:
+            kwargs["batch_input_shape"] = kwargs.pop("batch_shape")
+        kwargs.pop("optional", None)
+        _orig_init(self, *args, **kwargs)
+
+    InputLayer.__init__ = _safe_init
+    InputLayer._patched = True
+
+# =====================================================
+# ⚙️ إعدادات المحرك
+# =====================================================
+
 st.sidebar.title("⚙️ إعدادات المحرك")
 model_dir = "trained_model"
-if not os.path.exists(model_dir):
-    os.makedirs(model_dir)
+os.makedirs(model_dir, exist_ok=True)
 
-available_models = [f for f in os.listdir(model_dir) if f.endswith('.h5')]
+available_models = [f for f in os.listdir(model_dir) if f.endswith(".h5")]
 if not available_models:
     st.sidebar.error(f"⚠️ لا يوجد ملفات .h5 في مجلد {model_dir}")
     st.stop()
@@ -54,19 +135,47 @@ model_path = os.path.join(model_dir, selected_model_name)
 
 @st.cache_resource
 def load_ai_model(path):
-    """تحميل النموذج - الباتش أعلاه يتكفل بالتوافقية تلقائياً"""
-    return load_model(path, compile=False)
+    """
+    محاولة 1: تحميل عادي (للموديلات القديمة)
+    محاولة 2: تحويل h5 من Keras3→Keras2 ثم تحميل
+    """
+    # ---- المحاولة 1: تحميل مباشر ----
+    try:
+        return load_model(path, compile=False)
+    except Exception:
+        pass
+
+    # ---- المحاولة 2: تحويل التنسيق ثم تحميل ----
+    temp_path = None
+    try:
+        temp_path = fix_h5_for_keras2(path)
+        model = load_model(temp_path, compile=False)
+        return model
+    except Exception as e:
+        raise RuntimeError(
+            f"فشل تحميل الموديل حتى بعد تحويل التنسيق.\n"
+            f"تأكد أن إصدار TensorFlow متوافق.\n"
+            f"التفاصيل: {e}"
+        )
+    finally:
+        # تنظيف الملف المؤقت
+        if temp_path and os.path.exists(temp_path):
+            try:
+                os.remove(temp_path)
+            except OSError:
+                pass
 
 try:
     model = load_ai_model(model_path)
     st.sidebar.success(f"✅ النموذج النشط: {selected_model_name}")
 except Exception as e:
-    st.sidebar.error(f"❌ خطأ في تحميل الموديل: {e}")
+    st.sidebar.error(f"❌ خطأ في تحميل الموديل:\n{e}")
     st.stop()
 
-# ==========================================
+# =====================================================
 # 🧩 الواجهة الرئيسية
-# ==========================================
+# =====================================================
+
 st.title("🧩 محلل السودوكو الذكي")
 st.write("ارفع صورة اللغز، اختر الموديل، وصحح الأرقام لترى الحل مطبوعاً!")
 
@@ -135,13 +244,13 @@ if st.session_state.board is not None:
                         loc = st.session_state.cell_locs[r][c]
                         if loc is not None:
                             val = puzzle.board[r][c]
-                            startX, startY, endX, endY = loc
-                            textX = int((endX - startX) * 0.33) + startX
-                            textY = int((endY - startY) * 0.75) + startY
+                            sX, sY, eX, eY = loc
+                            tX = int((eX - sX) * 0.33) + sX
+                            tY = int((eY - sY) * 0.75) + sY
                             cv2.putText(
                                 res_img,
                                 str(val),
-                                (textX, textY),
+                                (tX, tY),
                                 cv2.FONT_HERSHEY_SIMPLEX,
                                 0.9,
                                 (255, 0, 0),
