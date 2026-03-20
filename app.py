@@ -18,24 +18,38 @@ from utils.sudoku import Sudoku
 st.set_page_config(page_title="محلل السودوكو الذكي", page_icon="🧩", layout="centered")
 
 # =====================================================
-# 🛡️ محوّل التوافقية: Keras 3 ← → Keras 2
+# 🛡️ محوّل التوافقية: Keras 3 → Keras 2
 # =====================================================
+
+# ✅ قائمة بكل المفاتيح التي أضافها Keras 3 ولا يفهمها Keras 2
+KERAS3_ONLY_KEYS = {
+    "quantization_config",   # ← السبب في الخطأ الجديد
+    "build_config",
+    "compile_config",
+    "optional",
+    "registered_name",
+    "module",
+}
+
+# ✅ مفاتيح خاصة بـ InputLayer تحتاج تحويل أو حذف
+INPUT_LAYER_RENAMES = {
+    "batch_shape": "batch_input_shape",
+}
 
 def _convert_keras3_to_keras2(obj):
     """
     تحويل تنسيق Keras 3 التسلسلي إلى تنسيق Keras 2
-    يعالج كل الطبقات: InputLayer, Conv2D, Dense, BatchNorm...
+    يعالج كل الطبقات بشكل تراجعي (recursive)
     """
-    # ---- القوائم: ندخل في كل عنصر ----
+    # ---- القوائم ----
     if isinstance(obj, list):
         return [_convert_keras3_to_keras2(item) for item in obj]
 
-    # ---- أي شيء غير dict: نرجعه كما هو ----
+    # ---- غير dict ----
     if not isinstance(obj, dict):
         return obj
 
     # ---- كشف كائن Keras 3 المسلسل ----
-    # الشكل: {"module": "...", "class_name": "...", "config": {...}, "registered_name": ...}
     is_keras3_obj = (
         "module" in obj and
         "class_name" in obj and
@@ -47,51 +61,83 @@ def _convert_keras3_to_keras2(obj):
         class_name = obj["class_name"]
         inner_config = obj.get("config", {})
 
-        # ✅ حالة خاصة: DTypePolicy → نرجع اسم النوع فقط كنص
+        # ✅ DTypePolicy → نص بسيط
         if class_name == "DTypePolicy":
             if isinstance(inner_config, dict):
                 return inner_config.get("name", "float32")
             return "float32"
 
-        # ✅ نحوّل الـ config الداخلي بشكل تراجعي
+        # ✅ تحويل الـ config الداخلي تراجعياً
         fixed_inner = _convert_keras3_to_keras2(inner_config)
 
-        # ✅ حالة خاصة: InputLayer
+        # ✅ تنظيف: حذف كل مفاتيح Keras 3 من config الطبقة
+        if isinstance(fixed_inner, dict):
+            for bad_key in KERAS3_ONLY_KEYS:
+                fixed_inner.pop(bad_key, None)
+
+        # ✅ InputLayer: تحويل batch_shape → batch_input_shape
         if class_name == "InputLayer" and isinstance(fixed_inner, dict):
-            if "batch_shape" in fixed_inner:
-                fixed_inner["batch_input_shape"] = fixed_inner.pop("batch_shape")
+            for old_key, new_key in INPUT_LAYER_RENAMES.items():
+                if old_key in fixed_inner:
+                    fixed_inner[new_key] = fixed_inner.pop(old_key)
             fixed_inner.pop("optional", None)
 
-        # ✅ إرجاع بتنسيق Keras 2 (بدون module و registered_name)
         return {
             "class_name": class_name,
             "config": fixed_inner,
         }
 
-    # ---- dict عادي: ندخل في كل القيم ----
-    return {k: _convert_keras3_to_keras2(v) for k, v in obj.items()}
+    # ---- dict عادي (ممكن يكون config طبقة) ----
+    result = {}
+    for k, v in obj.items():
+        # ✅ حذف المفاتيح الخاصة بـ Keras 3 من أي مستوى
+        if k in KERAS3_ONLY_KEYS:
+            continue
+        result[k] = _convert_keras3_to_keras2(v)
+    return result
+
+def _clean_layer_configs(obj):
+    """
+    تنظيف إضافي: حذف quantization_config وأي مفاتيح غريبة من configs الطبقات
+    حتى لو لم تكن بتنسيق Keras 3 الكامل
+    """
+    if isinstance(obj, list):
+        return [_clean_layer_configs(item) for item in obj]
+
+    if not isinstance(obj, dict):
+        return obj
+
+    cleaned = {}
+    for k, v in obj.items():
+        if k in KERAS3_ONLY_KEYS:
+            continue
+        cleaned[k] = _clean_layer_configs(v)
+    return cleaned
 
 def fix_h5_for_keras2(original_path):
     """
-    ينشئ نسخة مؤقتة من ملف .h5 مع config مُحوَّل لـ Keras 2
-    يرجع مسار الملف المؤقت
+    ينشئ نسخة مؤقتة من ملف .h5 مع config محوّل لـ Keras 2
     """
-    # إنشاء ملف مؤقت
     temp_fd, temp_path = tempfile.mkstemp(suffix=".h5")
     os.close(temp_fd)
     shutil.copy2(original_path, temp_path)
 
     with h5py.File(temp_path, "r+") as f:
-        # ---- تحويل model_config ----
         if "model_config" in f.attrs:
             raw = f.attrs["model_config"]
             if isinstance(raw, bytes):
                 raw = raw.decode("utf-8")
             config = json.loads(raw)
+
+            # ✅ الخطوة 1: تحويل كائنات Keras 3
             fixed = _convert_keras3_to_keras2(config)
+
+            # ✅ الخطوة 2: تنظيف نهائي لأي مفتاح متبقي
+            fixed = _clean_layer_configs(fixed)
+
             f.attrs["model_config"] = json.dumps(fixed).encode("utf-8")
 
-        # ---- حذف سمات Keras 3 الزائدة ----
+        # حذف سمات Keras 3 من المستوى الأعلى
         for attr_name in ["build_config", "compile_config"]:
             if attr_name in f.attrs:
                 del f.attrs[attr_name]
@@ -99,7 +145,7 @@ def fix_h5_for_keras2(original_path):
     return temp_path
 
 # =====================================================
-# 🛡️ باتش أمان إضافي لـ InputLayer
+# 🛡️ باتش أمان لـ InputLayer
 # =====================================================
 
 if not getattr(InputLayer, "_patched", False):
@@ -109,6 +155,7 @@ if not getattr(InputLayer, "_patched", False):
         if "batch_shape" in kwargs:
             kwargs["batch_input_shape"] = kwargs.pop("batch_shape")
         kwargs.pop("optional", None)
+        kwargs.pop("quantization_config", None)
         _orig_init(self, *args, **kwargs)
 
     InputLayer.__init__ = _safe_init
@@ -135,17 +182,13 @@ model_path = os.path.join(model_dir, selected_model_name)
 
 @st.cache_resource
 def load_ai_model(path):
-    """
-    محاولة 1: تحميل عادي (للموديلات القديمة)
-    محاولة 2: تحويل h5 من Keras3→Keras2 ثم تحميل
-    """
     # ---- المحاولة 1: تحميل مباشر ----
     try:
         return load_model(path, compile=False)
     except Exception:
         pass
 
-    # ---- المحاولة 2: تحويل التنسيق ثم تحميل ----
+    # ---- المحاولة 2: تحويل ثم تحميل ----
     temp_path = None
     try:
         temp_path = fix_h5_for_keras2(path)
@@ -153,12 +196,11 @@ def load_ai_model(path):
         return model
     except Exception as e:
         raise RuntimeError(
-            f"فشل تحميل الموديل حتى بعد تحويل التنسيق.\n"
-            f"تأكد أن إصدار TensorFlow متوافق.\n"
+            f"فشل تحميل الموديل.\n"
+            f"الحل: أعد حفظ الموديل بتنسيق .keras أو استخدم نفس إصدار TF.\n"
             f"التفاصيل: {e}"
         )
     finally:
-        # تنظيف الملف المؤقت
         if temp_path and os.path.exists(temp_path):
             try:
                 os.remove(temp_path)
