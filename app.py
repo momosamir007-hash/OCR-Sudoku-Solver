@@ -3,6 +3,7 @@ import cv2
 import imutils
 import numpy as np
 import pandas as pd
+import os
 from keras.preprocessing.image import img_to_array
 from keras.models import load_model
 
@@ -12,15 +13,38 @@ from utils.sudoku import Sudoku
 
 st.set_page_config(page_title="محلل السودوكو الذكي", page_icon="🧩", layout="centered")
 
-st.title("🧩 محلل السودوكو الذكي التفاعلي")
-st.write("قم برفع الصورة، راجع الأرقام وصححها إن لزم الأمر، وشاهد الحل مطبوعاً على الصورة!")
+# ==========================================
+# ⚙️ القائمة الجانبية: إعدادات الذكاء الاصطناعي
+# ==========================================
+st.sidebar.title("⚙️ إعدادات المحرك")
+model_dir = "trained_model"
 
-# تحميل الموديل مرة واحدة فقط لتسريع التطبيق
+# البحث عن جميع ملفات النماذج (.h5) في المجلد
+if not os.path.exists(model_dir):
+    os.makedirs(model_dir)
+available_models = [f for f in os.listdir(model_dir) if f.endswith('.h5')]
+
+if not available_models:
+    st.error(f"⚠️ لم يتم العثور على أي ملفات نماذج (.h5) في مجلد '{model_dir}'.")
+    st.stop()
+
+# قائمة منسدلة لاختيار الموديل
+selected_model_name = st.sidebar.selectbox("🧠 اختر نموذج الذكاء الاصطناعي:", available_models)
+model_path = os.path.join(model_dir, selected_model_name)
+st.sidebar.success(f"النموذج النشط حالياً:\n{selected_model_name}")
+
+# دالة تحميل الموديل (تتغير تلقائياً بتغير الاختيار)
 @st.cache_resource
-def load_ai_model():
-    return load_model("trained_model/digit_classifier.h5")
+def load_ai_model(m_path):
+    return load_model(m_path)
 
-model = load_ai_model()
+model = load_ai_model(model_path)
+
+# ==========================================
+# 🧩 الواجهة الرئيسية للتطبيق
+# ==========================================
+st.title("🧩 محلل السودوكو الذكي التفاعلي")
+st.write("قم برفع الصورة، واستخراج الأرقام بالنموذج الذي اخترته، ثم شاهد الحل السحري!")
 
 # مساحة لتخزين المتغيرات في ذاكرة التطبيق
 if "board" not in st.session_state:
@@ -40,7 +64,7 @@ if uploaded_file is not None:
     
     # زر استخراج الأرقام
     if st.button("🔍 استخراج الأرقام من الصورة"):
-        with st.spinner("الذكاء الاصطناعي يقرأ الأرقام..."):
+        with st.spinner(f"جاري القراءة باستخدام {selected_model_name}..."):
             image = cv2.imread("temp_image.jpg")
             image = imutils.resize(image, width=600)
             
@@ -51,7 +75,7 @@ if uploaded_file is not None:
             stepX = warped.shape[1] // 9
             stepY = warped.shape[0] // 9
             
-            cellLocs = [] # لحفظ أماكن المربعات لرسم الحل عليها لاحقاً
+            cellLocs = [] 
             
             for y in range(9):
                 row = []
@@ -71,12 +95,12 @@ if uploaded_file is not None:
                         roi = np.expand_dims(roi, axis=0)
                         pred = model.predict(roi).argmax(axis=1)[0]
                         board[y, x] = pred
-                        row.append(None) # مربع ممتلئ أساساً
+                        row.append(None) 
                     else:
-                        row.append((startX, startY, endX, endY)) # حفظ إحداثيات المربع الفارغ
+                        row.append((startX, startY, endX, endY)) 
                 cellLocs.append(row)
             
-            # حفظ النتيجة والصورة والإحداثيات في الذاكرة
+            # حفظ النتيجة في الذاكرة
             st.session_state.board = board.tolist()
             st.session_state.puzzle_image = puzzleImage.copy()
             st.session_state.cell_locs = cellLocs
@@ -87,7 +111,6 @@ if uploaded_file is not None:
     if st.session_state.board is not None:
         st.write("---")
         st.write("### 📝 شبكة الأرقام (قابلة للتعديل):")
-        st.info("💡 **نصيحة:** راجع الأرقام. إذا أخطأ الذكاء الاصطناعي في قراءة أي رقم من الصورة، اضغط عليه وصححه هنا (0 يعني فراغ).")
         
         # تحويل الشبكة لجدول تفاعلي
         df = pd.DataFrame(st.session_state.board)
@@ -97,7 +120,7 @@ if uploaded_file is not None:
         if st.button("🚀 حل اللغز الآن"):
             with st.spinner("جاري حل اللغز ورسم النتيجة..."):
                 try:
-                    # 💡 الإصلاح هنا: إجبار الجدول على أن يكون أرقاماً (int) لتجنب خطأ الأصفار
+                    # أخذ الأرقام بعد التعديل وتجنب مشكلة الأصفار
                     final_board = edited_df.fillna(0).astype(int).values.tolist()
                     
                     puzzle = Sudoku(final_board, 9, 9)
@@ -111,27 +134,22 @@ if uploaded_file is not None:
                     for (cellRow, boardRow) in zip(st.session_state.cell_locs, puzzle.board):
                         for (cell, digit) in zip(cellRow, boardRow):
                             if cell is None:
-                                continue # تخطي المربعات التي كانت ممتلئة في الأصل
+                                continue 
                             
-                            # أمان إضافي: لا تقم برسم الرقم إذا كان 0
                             if digit == 0:
                                 continue
                             
                             startX, startY, endX, endY = cell
                             
-                            # حساب مكان وضع الرقم (توسيط تقريبي)
                             testX = int((endX - startX) * 0.33) + startX
                             testY = int((endY - startY) * -0.2) + endY
                             
-                            # رسم الرقم باللون الأزرق على الصورة
                             cv2.putText(output_image, str(digit), (testX, testY),
                                         cv2.FONT_HERSHEY_SIMPLEX, 0.9, (255, 0, 0), 2)
                     
                     st.write("### ✅ الصورة النهائية بعد الحل:")
-                    # عرض الصورة في Streamlit
                     st.image(output_image, channels="BGR", use_container_width=True)
                     
-                    # إبقاء الجدول لعرض النتيجة كنص أيضاً
                     with st.expander("عرض النتيجة كجدول أرقام"):
                         solved_df = pd.DataFrame(puzzle.board)
                         st.dataframe(solved_df, use_container_width=True, hide_index=True)
